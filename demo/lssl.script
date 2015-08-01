@@ -1,0 +1,8 @@
+#!/bin/sh
+
+editcmd='s/CPPFLAGS = -D$(PLATFORM) -I$(TTCN3_DIR)\/include/CPPFLAGS = -D$(PLATFORM) -DAS_USE_SSL -I$(TTCN3_DIR)\/include -I$(OPENSSL_DIR)\/include/g
+s/LDFLAGS =/LDFLAGS = -lssl/g
+s/OPENSSL_DIR = $(TTCN3_DIR)/OPENSSL_DIR = \/mnt\/projects\/TTCN\/Tools\/openssl-0.9.8e/g
+'
+
+sed -e "$editcmd" <$1 >$2

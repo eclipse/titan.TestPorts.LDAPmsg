@@ -1,0 +1,1697 @@
+/******************************************************************************
+* Copyright (c) 2004, 2015  Ericsson AB
+* All rights reserved. This program and the accompanying materials
+* are made available under the terms of the Eclipse Public License v1.0
+* which accompanies this distribution, and is available at
+* http://www.eclipse.org/legal/epl-v10.html
+*
+* Contributors:
+* Endre Szalai
+* Adam Delic
+* Attila Balasko
+* Csaba Feher
+* Csaba Fehér
+* Gabor Bettesch
+* Gabor Szalai
+* Gergely Futo
+* Kristof Szabados
+* Oliver Czerman
+* Roland Gecse
+* Tibor Szabo
+* Zsolt Nandor Torok
+* Zsolt Torpis
+* Zsolt Török
+******************************************************************************/
+//
+//  File:               LDIF.ttcn
+//  Description:        LDIF definition file
+//  Rev:                R9A
+//  Prodnr:             CNL 113 385
+//
+
+module LDIF
+{
+import from LDAPmsg_PortType all;
+import from LDAPmsg_Types all;
+import from Lightweight_Directory_Access_Protocol_V3 language "ASN.1:1997" all;
+
+import from TCCEncoding_Functions all;
+
+external function f_ImportLDIF(in charstring pl_file_name, in boolean pl_resolve_env) return LDIFData;
+external function f_ExportLDIF(in charstring pl_file_name, in LDIFData pl_LDIF_data) return boolean;
+
+external function f_utf82unichar(in octetstring pl_utf8) return universal charstring;
+
+modulepar float tsp_delayAfterPopulation := 1.0;
+
+//*****************************************************************************
+//Type definitions for the ImportLDIF external function
+//*****************************************************************************
+type record LDIFData{
+  integer  version optional,
+  LDIFStructureList  datalist
+}
+
+type record of LDIFStructure LDIFStructureList;
+
+type record LDIFStructure{
+  charstring  dn_string,
+  LDIFChoice  data
+}
+
+type union LDIFChoice{
+AttrValRecordList  content,
+ChangeRecord  change
+}
+
+type record of AttrValRecord AttrValRecordList;
+
+type record AttrValRecord{
+  charstring  attributetype,
+  OptionList  optionlist, //0 length if not present
+  ValueUnion  attributevalue optional
+}
+
+type record of charstring OptionList;
+
+type union ValueUnion{
+  charstring  safe_string, //universalchar
+  charstring  base64_string,
+  charstring  url
+}
+
+type record ChangeRecord{
+  ControlList  controllist, //0 length if not present
+  ChangeType  changetype
+}
+
+type record of LDIFControl ControlList;
+
+type record LDIFControl{
+  charstring  ldapoid,
+  boolean  criticality optional,
+  octetstring  controlvalue optional
+}
+
+type union ChangeType{
+  AttrValRecordList  changeadd,
+  ChangeDelete  changedelete,
+  ChangeModifyDataList  changemodify,
+  ChangeModDn  changemoddn
+}
+
+type record of charstring ChangeDelete;
+
+type record of ChangeModifyData ChangeModifyDataList;
+
+type record ChangeModifyData{
+  charstring  operation,
+  AttrValRecordList  attrvalrecordlist
+    //AttributeDescription is the 0th element
+    // with the value omited
+}
+
+type record ChangeModDn{
+  charstring  modtype,
+  charstring  newrdn,
+  boolean  deleteoldrdn,
+  NewSuperior  newsuperior optional
+}
+
+type union NewSuperior{
+  charstring  distinguished,
+  charstring  base64_distinguished
+}
+
+type enumerated EntryConversion
+{
+  NoConversion,
+  Entry2ModifyAdd,
+  Entry2ModifyReplace
+}
+
+type record of LDAPMessage LDAPMessageList;
+
+type record of charstring LDAP_Attr_char_rec;
+
+////////////////////////////////////////////////////////////////////////////////
+// PopulateLDAPServer DepopulateLDAPServer functions
+////////////////////////////////////////////////////////////////////////////////
+
+function f_PopulateLDAPServer
+(
+  LDIFData pl_info,
+  LDAPmsg_PT pl_LDAP,
+  EntryConversion pl_conversion,
+  boolean pl_continue
+)
+return boolean
+{
+  var integer LDIFcount := sizeof(pl_info.datalist);
+  var LDAPMessage msg;
+  var boolean ret := true;
+
+  timer T2 := 10.0;
+
+  for(var integer i := 0; i < LDIFcount and (ret or pl_continue); i := i+1)
+  {
+    msg.messageID := i;
+
+    if(ischosen(pl_info.datalist[i].data.content))
+    {
+      if(pl_conversion == NoConversion)
+      {
+        msg.protocolOp.addRequest.entry := pl_info.datalist[i].dn_string;
+        msg.protocolOp.addRequest.attributes := {};
+        msg.controls := omit;
+
+        f_LDAPConvertLDIFAttributes(pl_info.datalist[i].data.content,
+          msg.protocolOp.addRequest.attributes);
+
+        var LDAPMessage response;
+        pl_LDAP.send(msg);
+        T2.start;
+        alt
+        {
+          [] pl_LDAP.receive(tr_server_addresponse(?)) -> value response
+            {
+              if(response.protocolOp.addResponse.resultCode == success)
+              {
+                log("Successfully added");
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.addResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop;
+            }
+          [] pl_LDAP.receive
+              { log("Other message received"); T2.stop; ret := false}
+          [] T2.timeout
+              { log("Timeout occured"); ret := false }
+        }
+      }
+      else
+      {
+        msg.protocolOp.modifyRequest.object := pl_info.datalist[i].dn_string;
+        msg.protocolOp.modifyRequest.modification := {};
+        msg.controls := {};
+
+        if(pl_conversion == Entry2ModifyAdd)
+        {
+          f_LDAPConvertLDIFModifications(
+            pl_info.datalist[i].data.content,
+            msg.protocolOp.modifyRequest.modification,
+            addValue);
+        }
+        else if(pl_conversion == Entry2ModifyReplace)
+        {
+          f_LDAPConvertLDIFModifications(
+            pl_info.datalist[i].data.content,
+            msg.protocolOp.modifyRequest.modification,
+            replaceValue);
+        }
+
+        var LDAPMessage response;
+        pl_LDAP.send(msg);
+        T2.start;
+        alt
+        {
+          [] pl_LDAP.receive(tr_server_modifyresponse(?)) -> value response
+            {
+              if(response.protocolOp.modifyResponse.resultCode == success)
+              {
+                log("Succesfully modified")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.modifyResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop;
+            }
+          [] pl_LDAP.receive
+              { log("Other message received"); T2.stop; ret := false }
+          [] T2.timeout
+              { log("Timeout occured"); ret := false }
+        }
+      }
+    }
+    else if(ischosen(pl_info.datalist[i].data.change.changetype.changeadd))
+    {
+      msg.protocolOp.addRequest.entry := pl_info.datalist[i].dn_string;
+
+      f_LDAPConvertLDIFAttributes(
+        pl_info.datalist[i].data.change.changetype.changeadd,
+        msg.protocolOp.addRequest.attributes);
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[i].data.change.controllist,
+        msg.controls);
+
+      var LDAPMessage response;
+      pl_LDAP.send(msg);
+      T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_addresponse(?)) -> value response
+            {
+              if(response.protocolOp.addResponse.resultCode == success)
+              {
+                log("Succesfully added")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.addResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop;
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); T2.stop; ret := false }
+        [] T2.timeout
+            { log("Timeout occured"); ret := false }
+      }
+    }
+    else if(ischosen(pl_info.datalist[i].data.change.changetype.changedelete))
+    {
+      msg.protocolOp.delRequest := pl_info.datalist[i].dn_string;
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[i].data.change.controllist,
+        msg.controls);
+
+      var LDAPMessage response;
+      pl_LDAP.send(msg);
+      T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_delresponse(?)) -> value response
+            {
+              if(response.protocolOp.delResponse.resultCode == success)
+              {
+                log("Succesfully deleted")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.delResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); T2.stop; ret := false }
+        [] T2.timeout
+            { log("Timeout occured"); ret := false }
+      }
+    }
+    else if(ischosen(pl_info.datalist[i].data.change.changetype.changemodify))
+    {
+      msg.protocolOp.modifyRequest.object := pl_info.datalist[i].dn_string;
+      msg.protocolOp.modifyRequest.modification := {};
+
+      var integer modificationcounter :=
+        sizeof(pl_info.datalist[i].data.change.changetype.changemodify);
+      for(var integer i2 := 0; i2 < modificationcounter; i2 := i2+1)
+      {
+        if(pl_info.datalist[i].data.change.changetype.changemodify[i2].operation == "add")
+        {
+          msg.protocolOp.modifyRequest.modification[i2].operation := addValue;
+        }
+        else if(pl_info.datalist[i].data.change.changetype.changemodify[i2].operation == "delete")
+        {
+          msg.protocolOp.modifyRequest.modification[i2].operation :=
+            deleteValue;
+        }
+        else if(pl_info.datalist[i].data.change.changetype.changemodify[i2].operation == "replace")
+        {
+          msg.protocolOp.modifyRequest.modification[i2].operation :=
+            replaceValue;
+        }
+
+        msg.protocolOp.modifyRequest.modification[i2].modification.typeField := pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].attributetype;
+
+        var integer optioncount := sizeof(pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].optionlist);
+        for(var integer i3 := 0; i3 < optioncount; i3 := i3+1)
+        {
+          msg.protocolOp.modifyRequest.modification[i2].modification.typeField := msg.protocolOp.modifyRequest.modification[i2].modification.typeField & ";" & pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].optionlist[i3];
+        }
+
+        var integer attributesize := sizeof(pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist);
+        msg.protocolOp.modifyRequest.modification[i2].modification.vals := {};
+        for(var integer i3 := 1 /* "0" is description*/; i3 < attributesize; i3:= i3+1)
+        {
+
+          if(ischosen(pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.safe_string))
+          {
+            msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string := pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.safe_string;
+          }else if(ischosen(pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.base64_string))
+          {
+            msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string := f_utf82unichar(dec_LDIF_Base64(pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.base64_string));
+          }else{
+            msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string := pl_info.datalist[i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.url;
+          }
+        }
+      }
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[i].data.change.controllist,
+        msg.controls);
+
+      var LDAPMessage response;
+      pl_LDAP.send(msg);
+      T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_modifyresponse(?)) -> value response
+            {
+              if(response.protocolOp.modifyResponse.resultCode == success)
+              {
+                log("Succesfully modified")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.modifyResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop;
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); T2.stop; ret := false }
+        [] T2.timeout
+            { log("Timeout occured"); ret := false }
+      }
+    }
+    else
+    {
+      msg.protocolOp.modDNRequest.entry := pl_info.datalist[i].dn_string;
+      msg.protocolOp.modDNRequest.newrdn :=
+        pl_info.datalist[i].data.change.changetype.changemoddn.newrdn;
+      msg.protocolOp.modDNRequest.deleteoldrdn :=
+        pl_info.datalist[i].data.change.changetype.changemoddn.deleteoldrdn;
+
+      if(not ispresent(pl_info.datalist[i].data.change.changetype.changemoddn.newsuperior))
+      {
+        msg.protocolOp.modDNRequest.newSuperior := omit;
+      }
+      else if(ischosen(pl_info.datalist[i].data.change.changetype.changemoddn.newsuperior.distinguished))
+      {
+        msg.protocolOp.modDNRequest.newSuperior := pl_info.datalist[i].data.change.changetype.changemoddn.newsuperior.distinguished;
+      }
+      else
+      {
+        msg.protocolOp.modDNRequest.newSuperior := f_utf82unichar(dec_LDIF_Base64(pl_info.datalist[i].data.change.changetype.changemoddn.newsuperior.base64_distinguished));
+      }
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[i].data.change.controllist,
+        msg.controls);
+
+      var LDAPMessage response;
+      pl_LDAP.send(msg);
+      T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_moddnresponse(?)) -> value response
+            {
+              if(response.protocolOp.modDNResponse.resultCode == success)
+              {
+                log("Succesfully moddned")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.modDNResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); T2.stop; ret := false }
+        [] T2.timeout
+            { log("Timeout occured"); ret := false }
+      }
+    }
+  }
+
+  timer T3 := tsp_delayAfterPopulation;
+  T3.start;
+  T3.timeout;
+
+  return ret;
+}
+
+function f_DepopulateLDAPServer
+(
+  LDIFData pl_info,
+  LDAPmsg_PT pl_LDAP,
+  boolean pl_continue
+)
+return boolean
+{
+  var integer LDIFcount := sizeof(pl_info.datalist);
+  var LDAPMessage msg;
+  var boolean ret := true;
+
+  timer T2 := 10.0;
+
+  for(var integer i := LDIFcount-1; i >= 0 and (ret or pl_continue); i := i-1)
+  {
+    msg.messageID := i;
+    msg.controls:= {};
+
+    if(ischosen(pl_info.datalist[i].data.content))
+    {
+      msg.protocolOp.delRequest := pl_info.datalist[i].dn_string;
+
+      var LDAPMessage response;
+      pl_LDAP.send(msg);
+      T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_delresponse(?)) -> value response
+            {
+              if(response.protocolOp.delResponse.resultCode == success)
+              {
+                log("Succesfully deleted")
+              }
+              else
+              {
+                log("Error in adding: ",
+                  response.protocolOp.delResponse.errorMessage);
+                ret := false;
+              }
+              T2.stop
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); T2.stop; ret := false }
+        [] T2.timeout
+            { log("Timeout occured"); ret := false }
+      }
+    }
+  }
+
+  timer T3 := tsp_delayAfterPopulation;
+  T3.start;
+  T3.timeout;
+
+  return ret;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// PopulateLDAPServer_2 DepopulateLDAPServer_2 functions
+////////////////////////////////////////////////////////////////////////////////
+function f_PopulateLDAPServer_2
+(
+        LDIFData        pl_info,
+        LDAPmsg_PT      pl_LDAP,
+        EntryConversion pl_conversion,
+        boolean         pl_continue,
+  inout LDAPMessageList pl_restore_record
+)
+return boolean
+{
+  var integer vl_i, vl_i2, vl_i3, vl_i4;
+  var integer       vl_LDIFcount := sizeof(pl_info.datalist);
+  var LDAPMessage   vl_msg, vl_restore_msg, vl_restore_msg_2, vl_response;
+  var boolean       vl_restoreable, vl_ret := true;
+  var AttributeList    vl_search_result;
+  var ModificationList vl_restore_modificationList
+  var AttributeDescriptionList vl_attr_descr_list;
+  timer tl_T2 := 10.0;
+
+  //Clear the restoring record
+  pl_restore_record := {};
+  //Every message will be stored with omited controls field and with 0 message
+  // ID, which will be updated by depopulation
+  vl_restore_msg.controls := omit;
+  vl_restore_msg.messageID := 0;
+  vl_restore_msg_2.controls := omit;
+  vl_restore_msg_2.messageID := 0;
+
+  if( (not pl_continue) and ispresent(pl_info.version))
+  {
+    if(pl_info.version == -1)
+    {
+      log("There was some problem with ldif file. Population not performed.");
+      return false;
+    }
+  }
+
+  for(vl_i := 0; vl_i < vl_LDIFcount and (vl_ret or pl_continue); vl_i :=vl_i+1)
+  {
+    vl_msg.messageID := vl_i;
+
+    if(ischosen(pl_info.datalist[vl_i].data.content))
+    {
+      if(pl_conversion == NoConversion)
+      {
+        vl_msg.protocolOp.addRequest.entry := pl_info.datalist[vl_i].dn_string;
+        vl_msg.protocolOp.addRequest.attributes := {};
+        vl_msg.controls := omit;
+
+        f_LDAPConvertLDIFAttributes(pl_info.datalist[vl_i].data.content,
+          vl_msg.protocolOp.addRequest.attributes);
+
+        //Prepare the resoring message
+        //----------------------------
+        //Create the delete request message for restoring
+        vl_restore_msg.protocolOp.delRequest :=pl_info.datalist[vl_i].dn_string;
+        //----------------------------end of restore message preparation
+
+        pl_LDAP.send(vl_msg);
+        tl_T2.start;
+        alt
+        {
+          [] pl_LDAP.receive(tr_server_addresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.addResponse.resultCode == success)
+              {
+                log("Successfully added");
+                //Store the delete request message for restoring
+                pl_restore_record[sizeof(pl_restore_record)] := vl_restore_msg;
+              }
+              else
+              {
+                log("Error in adding: ",
+                  vl_response.protocolOp.addResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop;
+            }
+          [] pl_LDAP.receive
+              { log("Other message received"); tl_T2.stop; vl_ret := false}
+          [] tl_T2.timeout
+              { log("Timeout occured"); vl_ret := false }
+        }
+      }
+      else
+      {
+        vl_msg.protocolOp.modifyRequest.object := pl_info.datalist[vl_i].dn_string;
+        vl_msg.protocolOp.modifyRequest.modification := {};
+        vl_msg.controls := {};
+
+        if(pl_conversion == Entry2ModifyAdd)
+        {
+          f_LDAPConvertLDIFModifications(
+            pl_info.datalist[vl_i].data.content,
+            vl_msg.protocolOp.modifyRequest.modification,
+            addValue);
+        }
+        else if(pl_conversion == Entry2ModifyReplace)
+        {
+          f_LDAPConvertLDIFModifications(
+            pl_info.datalist[vl_i].data.content,
+            vl_msg.protocolOp.modifyRequest.modification,
+            replaceValue);
+        }
+
+        //Prepare the resoring message
+        //----------------------------
+        //Create the attribute list from modification Request
+        vl_attr_descr_list := {"objectClass"};
+        for (vl_i2 := 0; 
+             vl_i2 < sizeof(vl_msg.protocolOp.modifyRequest.modification);
+             vl_i2 := vl_i2 + 1)
+        {
+          vl_attr_descr_list[sizeof(vl_attr_descr_list)] := vl_msg.protocolOp.
+            modifyRequest.modification[vl_i2].modification.typeField;
+        }
+
+        //Fetch the created attribute list from the involved entity
+        vl_restoreable := f_search_LDAP_entity(
+                            pl_info.datalist[vl_i].dn_string,
+                            pl_LDAP,
+                            vl_search_result, //out
+                            vl_attr_descr_list);
+
+        //Create the attribute list to the restoring
+        if (vl_restoreable)
+        {
+          vl_restore_modificationList := {};
+          f_create_restore_modificationList(
+            vl_msg.protocolOp.modifyRequest.modification,
+            vl_search_result,
+            vl_restore_modificationList //out
+          );
+          vl_restore_msg.protocolOp.modifyRequest.object := 
+            pl_info.datalist[vl_i].dn_string;
+          vl_restore_msg.protocolOp.modifyRequest.modification := 
+            vl_restore_modificationList;
+        }
+        //----------------------------end of restore message preparation
+
+        pl_LDAP.send(vl_msg);
+        tl_T2.start;
+        alt
+        {
+          [] pl_LDAP.receive(tr_server_modifyresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.modifyResponse.resultCode == success)
+              {
+                log("Succesfully modified");
+                if(vl_restoreable)
+                {//Store the modify request message for restoring
+                  pl_restore_record[sizeof(pl_restore_record)] :=vl_restore_msg;
+                }
+                else
+                {
+                  log("This modification cannot be restored: ",
+                    vl_msg.protocolOp.modifyRequest.modification);
+                  vl_ret := false;
+                }
+              }
+              else
+              {
+                log("Error in adding: ",
+                  vl_response.protocolOp.modifyResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop;
+            }
+          [] pl_LDAP.receive
+              { log("Other message received"); tl_T2.stop; vl_ret := false }
+          [] tl_T2.timeout
+              { log("Timeout occured"); vl_ret := false }
+        }
+      }
+    }
+    else if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changeadd))
+    {
+      vl_msg.protocolOp.addRequest.entry := pl_info.datalist[vl_i].dn_string;
+
+      f_LDAPConvertLDIFAttributes(
+        pl_info.datalist[vl_i].data.change.changetype.changeadd,
+        vl_msg.protocolOp.addRequest.attributes);
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[vl_i].data.change.controllist,
+        vl_msg.controls);
+
+      //Create the delete request message for restoring
+      vl_restore_msg.protocolOp.delRequest := pl_info.datalist[vl_i].dn_string;
+
+      pl_LDAP.send(vl_msg);
+      tl_T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_addresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.addResponse.resultCode == success)
+              {
+                log("Succesfully added")
+               //Store the delete request message for restoring
+                pl_restore_record[sizeof(pl_restore_record)] := vl_restore_msg;
+              }
+              else
+              {
+                log("Error in adding: ",
+                  vl_response.protocolOp.addResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop;
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); tl_T2.stop; vl_ret := false }
+        [] tl_T2.timeout
+            { log("Timeout occured"); vl_ret := false }
+      }
+    }
+    else if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changedelete))
+    {
+      vl_msg.protocolOp.delRequest := pl_info.datalist[vl_i].dn_string;
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[vl_i].data.change.controllist,
+        vl_msg.controls);
+
+      //Prepare the resoring message
+      //----------------------------
+      //Fetch the full involved entity
+      vl_restoreable := f_search_LDAP_entity(
+                          pl_info.datalist[vl_i].dn_string,
+                          pl_LDAP,
+                          vl_search_result, //out
+                          {});
+//According the RFC it should be  {"*","objectClass"}); ?
+      //----------------------------end of restore message preparation
+
+      pl_LDAP.send(vl_msg);
+      tl_T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_delresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.delResponse.resultCode == success)
+              {
+                log("Succesfully deleted");
+                if(vl_restoreable)
+                {//Store the add request message for restoring
+                  vl_restore_msg.protocolOp.addRequest.entry := 
+                    pl_info.datalist[vl_i].dn_string;
+                  vl_restore_msg.protocolOp.addRequest.attributes := 
+                    vl_search_result;
+                  pl_restore_record[sizeof(pl_restore_record)] := 
+                    vl_restore_msg;
+                }
+                else
+                {
+                  log("This deleted entity cannot be restored: ",
+                    pl_info.datalist[vl_i].dn_string);
+                  vl_ret := false;
+                }
+              }
+              else
+              {
+                log("Error in delete: ",
+                  vl_response.protocolOp.delResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); tl_T2.stop; vl_ret := false }
+        [] tl_T2.timeout
+            { log("Timeout occured"); vl_ret := false }
+      }
+    }
+    else if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changemodify))
+    {
+      vl_msg.protocolOp.modifyRequest.object := pl_info.datalist[vl_i].dn_string;
+      vl_msg.protocolOp.modifyRequest.modification := {};
+
+      var integer modificationcounter :=
+        sizeof(pl_info.datalist[vl_i].data.change.changetype.changemodify);
+      for(var integer i2 := 0; i2 < modificationcounter; i2 := i2+1)
+      {
+        if(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].operation == "add")
+        {
+          vl_msg.protocolOp.modifyRequest.modification[i2].operation :=
+            addValue;
+        }
+        else if(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].operation == "delete")
+        {
+          vl_msg.protocolOp.modifyRequest.modification[i2].operation :=
+            deleteValue;
+        }
+        else if(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].operation == "replace")
+        {
+          vl_msg.protocolOp.modifyRequest.modification[i2].operation :=
+            replaceValue;
+        }
+
+        vl_msg.protocolOp.modifyRequest.modification[i2].modification.typeField :=
+         pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].attributetype;
+
+        var integer optioncount := sizeof(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].optionlist);
+        for(var integer i3 := 0; i3 < optioncount; i3 := i3+1)
+        {
+          vl_msg.protocolOp.modifyRequest.modification[i2].modification.typeField := 
+           vl_msg.protocolOp.modifyRequest.modification[i2].modification.typeField & ";" 
+           & pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[0].optionlist[i3];
+        }
+
+        var integer attributesize := sizeof(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist);
+        vl_msg.protocolOp.modifyRequest.modification[i2].modification.vals := {};
+        for(var integer i3 := 1 /* "0" is description*/; i3 < attributesize; i3:= i3+1)
+        {
+
+          if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.safe_string))
+          {
+            vl_msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string :=
+              pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.safe_string;
+          }else if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.base64_string))
+          {
+            vl_msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string :=
+              f_utf82unichar(dec_LDIF_Base64(pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.base64_string));
+          }else{
+            vl_msg.protocolOp.modifyRequest.modification[i2].modification.vals[i3-1].string :=
+              pl_info.datalist[vl_i].data.change.changetype.changemodify[i2].attrvalrecordlist[i3].attributevalue.url;
+          }
+        }
+      }
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[vl_i].data.change.controllist,
+        vl_msg.controls);
+
+      //Prepare the resoring message
+      //----------------------------
+      //Create the attribute list from modification Request
+      vl_attr_descr_list := {"objectClass"};
+      for (vl_i2 := 0; 
+           vl_i2 < sizeof(vl_msg.protocolOp.modifyRequest.modification);
+           vl_i2 := vl_i2 + 1)
+      {
+        vl_attr_descr_list[sizeof(vl_attr_descr_list)] := vl_msg.protocolOp.
+          modifyRequest.modification[vl_i2].modification.typeField;
+      }
+
+      //Fetch the created attribute list from the involved entity
+      vl_restoreable := f_search_LDAP_entity(
+                          pl_info.datalist[vl_i].dn_string,
+                          pl_LDAP,
+                          vl_search_result, //out
+                          vl_attr_descr_list);
+
+      if (vl_restoreable)
+      {
+        vl_restore_modificationList := {};
+        f_create_restore_modificationList(
+          vl_msg.protocolOp.modifyRequest.modification,
+          vl_search_result,
+          vl_restore_modificationList //out
+        );
+        vl_restore_msg.protocolOp.modifyRequest.object :=
+          pl_info.datalist[vl_i].dn_string;
+        vl_restore_msg.protocolOp.modifyRequest.modification :=
+          vl_restore_modificationList;
+      }
+      //----------------------------end of restore message preparation
+
+      pl_LDAP.send(vl_msg);
+      tl_T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_modifyresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.modifyResponse.resultCode == success)
+              {
+                log("Succesfully modified");
+                if(vl_restoreable)
+                {//Store the modify request message for restoring
+                  pl_restore_record[sizeof(pl_restore_record)] :=vl_restore_msg;
+                }
+                else
+                {
+                  log("This modification cannot be restored: ",
+                    vl_msg.protocolOp.modifyRequest.modification);
+                  vl_ret := false;
+                }
+              }
+              else
+              {
+                log("Error in modification: ",
+                  vl_response.protocolOp.modifyResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop;
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); tl_T2.stop; vl_ret := false }
+        [] tl_T2.timeout
+            { log("Timeout occured"); vl_ret := false }
+      }
+    }
+    else
+    {
+      vl_msg.protocolOp.modDNRequest.entry := pl_info.datalist[vl_i].dn_string;
+      vl_msg.protocolOp.modDNRequest.newrdn :=
+        pl_info.datalist[vl_i].data.change.changetype.changemoddn.newrdn;
+      vl_msg.protocolOp.modDNRequest.deleteoldrdn :=
+        pl_info.datalist[vl_i].data.change.changetype.changemoddn.deleteoldrdn;
+
+      if(not ispresent(pl_info.datalist[vl_i].data.change.changetype.changemoddn.newsuperior))
+      {
+        vl_msg.protocolOp.modDNRequest.newSuperior := omit;
+      }
+      else if(ischosen(pl_info.datalist[vl_i].data.change.changetype.changemoddn.newsuperior.distinguished))
+      {
+        vl_msg.protocolOp.modDNRequest.newSuperior := 
+         pl_info.datalist[vl_i].data.change.changetype.changemoddn.newsuperior.distinguished;
+      }
+      else
+      {
+        vl_msg.protocolOp.modDNRequest.newSuperior := 
+         f_utf82unichar(dec_LDIF_Base64(pl_info.datalist[vl_i].data.change.changetype.changemoddn.newsuperior.base64_distinguished));
+      }
+
+      f_LDAPConvertLDIFControls(
+        pl_info.datalist[vl_i].data.change.controllist,
+        vl_msg.controls);
+
+      //Prepare the resoring message(s)
+      //----------------------------
+      var charstring vl_orig_rdn, vl_new_rdn, vl_orig_superior, vl_entry;
+      var integer vl_size;
+      vl_new_rdn :=
+        pl_info.datalist[vl_i].data.change.changetype.changemoddn.newrdn;
+      vl_entry := pl_info.datalist[vl_i].dn_string;
+      //Split the entry name into RDN and superior part
+      vl_size := lengthof(vl_entry);
+      vl_orig_rdn := vl_entry;
+      vl_orig_superior := "";
+      for (vl_i2 :=0; vl_i2 < vl_size; vl_i2 := vl_i2 + 1)
+      { //find the first non-escaped ,
+        if(vl_entry[vl_i2] == ",")
+        {
+          vl_orig_rdn := substr(vl_entry,0,vl_i2);
+          vl_orig_superior := substr(vl_entry,vl_i2+1,vl_size-vl_i2-1);
+          vl_i2 := vl_size;
+        }
+        else if(vl_entry[vl_i2] == "\\")
+        {//This is for skip escape characters
+          vl_i2 := vl_i2 + 1;
+        }
+      }
+
+      //Store newrdn, newSuperior and entry (depending on newSuperior)
+      // for restoring
+      vl_restore_msg.protocolOp.modDNRequest.newrdn := vl_orig_rdn;
+      if( ispresent (vl_msg.protocolOp.modDNRequest.newSuperior))
+      {
+        vl_restore_msg.protocolOp.modDNRequest.newSuperior := vl_orig_superior;
+        vl_restore_msg.protocolOp.modDNRequest.entry :=
+          vl_new_rdn & "," & vl_msg.protocolOp.modDNRequest.newSuperior;
+      }
+      else
+      {
+        vl_restore_msg.protocolOp.modDNRequest.newSuperior := omit;
+        vl_restore_msg.protocolOp.modDNRequest.entry :=
+          vl_new_rdn & "," & vl_orig_superior;
+      }
+
+      //Prepare for setting deleteoldrdn
+      //Create attribute list from newrdn
+      vl_attr_descr_list := {"objectClass"};
+      var AttributeList vl_attr_list_newrdn := {};
+      var LDAP_Attr_char_rec vl_attr_char_rec := {};
+      var integer vl_start_pos := 0;
+      //Split the rdn into attributes
+      vl_size := lengthof(vl_new_rdn);
+      for (vl_i2 :=0; vl_i2 < vl_size; vl_i2 := vl_i2 + 1)
+      { //find the  non-escaped +'s
+        if(vl_new_rdn[vl_i2] == "+")
+        {
+          vl_attr_char_rec[sizeof(vl_attr_char_rec)]
+            := substr(vl_new_rdn,vl_start_pos,vl_i2-vl_start_pos);
+          vl_start_pos := vl_i2 + 1;
+        }
+        else if(vl_new_rdn[vl_i2] == "\\")
+        {//This is for skip escape characters
+          vl_i2 := vl_i2 + 1;
+        }
+      }
+      vl_attr_char_rec[sizeof(vl_attr_char_rec)]
+        := substr(vl_new_rdn,vl_start_pos,vl_size-vl_start_pos);
+      //Split the attributes into type and value
+      for (vl_i3 := 0; vl_i3 < sizeof(vl_attr_char_rec); vl_i3 := vl_i3 + 1)
+      { //For every attribute
+        vl_size := lengthof(vl_attr_char_rec[vl_i3]);
+        for (vl_i2 := 0; vl_i2 < vl_size; vl_i2 := vl_i2 + 1)
+        { //find the first non-escaped =
+          if(vl_attr_char_rec[vl_i3][vl_i2] == "=")
+          {
+            //filter the spaces
+            var integer vl_type1, vl_type2, vl_val1, vl_val2;
+            var boolean vl_found := false;
+            for (vl_type1 := 0; 
+                 (vl_type1 < vl_i2) and not vl_found; 
+                 vl_type1 := vl_type1 + 1)
+            { if (vl_attr_char_rec[vl_i3][vl_type1] != " ")
+              { vl_found := true; vl_type1 := vl_type1 - 1;}
+            }
+            vl_found := false;
+            for (vl_type2 := vl_i2-1; 
+                 (vl_type2 > 0) and not vl_found; 
+                 vl_type2 := vl_type2 - 1)
+            { if (vl_attr_char_rec[vl_i3][vl_type2] != " ")
+              { vl_found := true; vl_type2 := vl_type2 + 1; }
+            }
+            if (vl_type2 == 0 )
+            { vl_type2 := vl_type1 - 1;}
+            vl_found := false;
+            for (vl_val1 := vl_i2+1; 
+                 (vl_val1 < vl_size) and not vl_found; 
+                 vl_val1 := vl_val1 + 1)
+            { if (vl_attr_char_rec[vl_i3][vl_val1] != " ")
+              { vl_found := true; vl_val1 := vl_val1 - 1;}
+            }
+            vl_found := false;
+            for (vl_val2 := vl_size-1; 
+                 (vl_val2 > vl_i2) and not vl_found; 
+                 vl_val2 := vl_val2 - 1)
+            { if (vl_attr_char_rec[vl_i3][vl_val2] != " ")
+              { vl_found := true; vl_val2 := vl_val2 + 1; }
+            }
+            if (vl_val2 == vl_i2 )
+            { vl_val2 := vl_val1 - 1;}
+
+            vl_attr_list_newrdn[sizeof(vl_attr_list_newrdn)].typeField :=
+              substr(vl_attr_char_rec[vl_i3],vl_type1,vl_type2-vl_type1+1);
+            vl_attr_descr_list[sizeof(vl_attr_descr_list)] :=
+              substr(vl_attr_char_rec[vl_i3],vl_type1,vl_type2-vl_type1+1);
+            vl_attr_list_newrdn[sizeof(vl_attr_list_newrdn)-1].vals[0].string :=
+             substr(vl_attr_char_rec[vl_i3],vl_val1,vl_val2-vl_val1+1);
+            vl_i2 := vl_size;
+          }
+          else if(vl_attr_char_rec[vl_i3][vl_i2] == "\\")
+          {//This is for skip escape characters
+            vl_i2 := vl_i2 + 1;
+          }
+        }
+      }
+      //Fetch the attributes of the newrdn
+      vl_restoreable := f_search_LDAP_entity(
+                          pl_info.datalist[vl_i].dn_string,
+                          pl_LDAP,
+                          vl_search_result, //out
+                          vl_attr_descr_list);
+
+      //AttributeType and AttributeValues are case insensitive
+      for (vl_i2 := 0; vl_i2 < sizeof(vl_search_result); vl_i2 := vl_i2 + 1)
+      {
+        f_LDAP_lowercase_string(vl_search_result[vl_i2].typeField);
+        for (vl_i4:=0; vl_i4<sizeof(vl_search_result[vl_i2].vals); vl_i4:=vl_i4+1)
+        { 
+          if(ischosen(vl_search_result[vl_i2].vals[vl_i4].string))
+          {
+            f_LDAP_lowercase_string(vl_search_result[vl_i2].vals[vl_i4].string);
+          }
+        }
+      }
+      for (vl_i2 := 0; vl_i2 < sizeof(vl_attr_list_newrdn); vl_i2 := vl_i2 + 1)
+      {
+        f_LDAP_lowercase_string(vl_attr_list_newrdn[vl_i2].typeField);
+        f_LDAP_lowercase_string(vl_attr_list_newrdn[vl_i2].vals[0].string);
+      }
+
+      //compare current state of LDAP server and newrdn parameter attributes
+      var boolean vl_any := false, vl_every := true, vl_match;
+      var AttributeList vl_attr_restore;
+      if(vl_restoreable)
+      {
+        for (vl_i3 := 0; vl_i3 < sizeof(vl_attr_list_newrdn);vl_i3:=vl_i3+1)
+        {// For every attributes from newrdn
+          vl_match := false;
+          for (vl_i2 :=0; vl_i2 < sizeof(vl_search_result); vl_i2 := vl_i2 + 1)
+          {//Compare with every attribute from LDAP server
+            if(vl_attr_list_newrdn[vl_i3].typeField ==
+               vl_search_result[vl_i2].typeField)
+            {//attribute match
+              vl_size := sizeof(vl_search_result[vl_i2].vals);
+              for (vl_i4 :=0; vl_i4 < vl_size; vl_i4 := vl_i4 + 1)
+              { //Search for same value
+                if(vl_attr_list_newrdn[vl_i3].vals[0] ==
+                   vl_search_result[vl_i2].vals[vl_i4])
+                {
+                  vl_match := true;
+                  vl_any := true;
+                  vl_attr_restore[sizeof(vl_attr_restore)] :=
+                    vl_attr_list_newrdn[vl_i2];
+                }
+              }
+            }
+          }
+          if(not vl_match)
+          { vl_every := false;}
+        }
+      }
+
+      //Set deleteoldrdn
+      if (vl_every)
+      {
+        vl_restore_msg.protocolOp.modDNRequest.deleteoldrdn := false;
+      }
+      else
+      {
+        vl_restore_msg.protocolOp.modDNRequest.deleteoldrdn := true;
+        if(vl_any)
+        {//Store in vl_restore_msg_2 attributes to be readded during restoring
+         // after moddn
+          vl_restore_modificationList := {};
+          for(vl_i2 := 0; vl_i2 < sizeof(vl_attr_restore); vl_i2 := vl_i2 + 1)
+          {
+            vl_restore_modificationList[vl_i2].operation := addValue;
+            vl_restore_modificationList[vl_i2].modification :=
+              vl_attr_restore[vl_i2];
+          }
+
+          vl_restore_msg_2.protocolOp.modifyRequest.object :=
+            pl_info.datalist[vl_i].dn_string;
+          vl_restore_msg_2.protocolOp.modifyRequest.modification :=
+            vl_restore_modificationList;
+        }
+      }
+      //----------------------------end of restore message preparation
+
+      pl_LDAP.send(vl_msg);
+      tl_T2.start;
+      alt
+      {
+        [] pl_LDAP.receive(tr_server_moddnresponse(?)) -> value vl_response
+            {
+              if(vl_response.protocolOp.modDNResponse.resultCode == success)
+              {
+                log("Succesful moddn")
+                if(vl_restoreable)
+                {//Store the moddn request message for restoring
+                  if (vl_any and (not vl_every))
+                  {//If deleteoldrdn cannot be set for exact restoring, then
+                   // also this extra attribute add should be performed
+                    pl_restore_record[sizeof(pl_restore_record)] :=
+                      vl_restore_msg_2;
+                  }
+                  pl_restore_record[sizeof(pl_restore_record)] :=vl_restore_msg;
+                }
+                else
+                {
+                  log("This modification cannot be restored: ",
+                    vl_msg.protocolOp.modDNRequest);
+                  vl_ret := false;
+                }
+              }
+              else
+              {
+                log("Error in moddn: ",
+                  vl_response.protocolOp.modDNResponse.errorMessage);
+                vl_ret := false;
+              }
+              tl_T2.stop
+            }
+        [] pl_LDAP.receive
+            { log("Other message received"); tl_T2.stop; vl_ret := false }
+        [] tl_T2.timeout
+            { log("Timeout occured"); vl_ret := false }
+      }
+    }
+  }
+
+  tl_T2.start(tsp_delayAfterPopulation);
+  tl_T2.timeout;
+
+  return vl_ret;
+}
+
+
+function f_DepopulateLDAPServer_2
+(
+  LDAPmsg_PT      pl_LDAP,
+  boolean         pl_continue,
+  LDAPMessageList pl_restore_record
+)
+return boolean
+{
+  var LDAPMessage vl_response;
+  var boolean vl_ret := true;
+  var integer vl_i;
+
+  timer tl_T2 := 10.0;
+
+  for(vl_i:=sizeof(pl_restore_record)-1; vl_i>=0 and(vl_ret or pl_continue); vl_i:=vl_i-1)
+  {
+    pl_restore_record[vl_i].messageID := vl_i;
+
+    pl_LDAP.send(pl_restore_record[vl_i]);
+    tl_T2.start;
+    alt
+    {
+      [] pl_LDAP.receive(tr_server_delresponse(vl_i)) -> value vl_response
+          {
+            if(vl_response.protocolOp.delResponse.resultCode == success)
+            {
+              log("Succesfully deleted")
+            }
+            else
+            {
+              log("Error in delete: ",
+                vl_response.protocolOp.delResponse.errorMessage);
+              vl_ret := false;
+            }
+            tl_T2.stop
+          }
+
+      [] pl_LDAP.receive(tr_server_addresponse(vl_i)) -> value vl_response
+          {
+            if(vl_response.protocolOp.addResponse.resultCode == success)
+            {
+              log("Succesfully added")
+            }
+            else
+            {
+              log("Error in adding: ",
+                vl_response.protocolOp.addResponse.errorMessage);
+              vl_ret := false;
+            }
+            tl_T2.stop
+          }
+
+      [] pl_LDAP.receive(tr_server_modifyresponse(vl_i)) -> value vl_response
+          {
+            if(vl_response.protocolOp.modifyResponse.resultCode == success)
+            {
+              log("Succesfully modified")
+            }
+            else
+            {
+              log("Error in modify: ",
+                vl_response.protocolOp.modifyResponse.errorMessage);
+              vl_ret := false;
+            }
+            tl_T2.stop;
+          }
+
+      [] pl_LDAP.receive(tr_server_moddnresponse(vl_i)) -> value vl_response
+          {
+            if(vl_response.protocolOp.modDNResponse.resultCode == success)
+            {
+              log("Succesful moddn")
+            }
+            else
+            {
+              log("Error in moddn: ",
+                vl_response.protocolOp.modDNResponse.errorMessage);
+              vl_ret := false;
+            }
+            tl_T2.stop
+          }
+
+      [] pl_LDAP.receive
+          { log("Other message received"); repeat; }
+
+      [] tl_T2.timeout
+          { log("Timeout occured"); vl_ret := false }
+    }
+  }
+
+  tl_T2.start(tsp_delayAfterPopulation);
+  tl_T2.timeout;
+
+  return vl_ret;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// templates to check the received value in the 
+// PopulateLDAPServer / DepopulateLDAPServer functions
+///////////////////////////////////////////////////////////////////////////////
+
+template LDAPMessage tr_server_delresponse
+(template integer pl_msgId) :=
+{
+  messageID := pl_msgId,
+  protocolOp :=
+  {
+    delResponse :=
+    {
+      resultCode := ?,
+      matchedDN := ?,
+      errorMessage:= ?,
+      referral := *
+    }
+  },
+  controls := *
+}
+
+template LDAPMessage tr_server_addresponse
+(template integer pl_msgId) :=
+{
+  messageID := pl_msgId,
+  protocolOp:=
+  {
+    addResponse :=
+    {
+      resultCode := ?,
+        matchedDN := ?,
+        errorMessage:= ?,
+        referral := *
+    }
+  },
+  controls := *
+}
+
+template LDAPMessage tr_server_modifyresponse
+(template integer pl_msgId) :=
+{
+  messageID := pl_msgId,
+  protocolOp:=
+  {
+    modifyResponse :=
+    {
+      resultCode := ?,
+      matchedDN := ?,
+      errorMessage:= ?,
+      referral := *
+    }
+  },
+  controls := *
+}
+
+template LDAPMessage tr_server_moddnresponse
+(template integer pl_msgId) :=
+{
+  messageID := pl_msgId,
+  protocolOp:=
+  {
+    modDNResponse :=
+    {
+      resultCode := ?,
+      matchedDN := ?,
+      errorMessage:= ?,
+      referral := *
+    }
+  },
+  controls := *
+}
+
+template LDAPMessage tr_searchResultEntry
+(template integer pl_msgId,
+ template charstring pl_dn_string) :=
+{
+  messageID := pl_msgId,
+  protocolOp:=
+  {
+    searchResEntry :=
+    {
+      objectName := ?,
+      attributes := ?
+    }
+  },
+  controls := *
+}
+
+template LDAPMessage tr_searchResultDone
+(template integer pl_msgId) :=
+{
+  messageID := pl_msgId,
+  protocolOp:=
+  {
+    searchResDone := ?
+  },
+  controls := *
+}
+
+template SearchRequest t_SearchRequest_exact_dn
+( LDAPDN pl_dn,
+  AttributeDescriptionList pl_attr_list) :=
+{
+  baseObject := pl_dn,
+  scope := baseObject,
+  derefAliases := neverDerefAliases,
+  sizeLimit := 0,
+  timeLimit := 0,
+  typesOnly := false,
+  filter := {present_ := "objectClass"},
+  attributes := pl_attr_list
+}
+
+function f_LDAPConvertLDIFModifications
+(
+  inout AttrValRecordList pl_from,
+  inout ModificationList pl_to,
+  in ModificationOperation pl_modop
+)
+{
+  var integer attrtypeidx, nextvalidx;
+  for(var integer i2 := 0; i2 < sizeof(pl_from); i2 := i2+1)
+  {
+    attrtypeidx := -1;
+    for(var integer j := sizeof(pl_to)-1; j >= 0 and attrtypeidx == -1;
+      j := j-1)
+    {
+      if(pl_to[j].modification.typeField == pl_from[i2].attributetype)
+      {
+        attrtypeidx := j;
+      }
+    }
+    if(attrtypeidx == -1)
+    {
+      attrtypeidx := sizeof(pl_to);
+      pl_to[attrtypeidx].modification.vals := {};
+      pl_to[attrtypeidx].modification.typeField := pl_from[i2].attributetype;
+    }
+    pl_to[attrtypeidx].operation := pl_modop;
+
+    for(var integer i3 := 0; i3 < sizeof(pl_from[i2].optionlist); i3 := i3+1)
+    {
+      pl_to[attrtypeidx].modification.typeField :=
+        pl_to[attrtypeidx].modification.typeField
+        & ";" & pl_from[i2].optionlist[i3];
+    }
+
+    nextvalidx := sizeof(pl_to[attrtypeidx].modification.vals);
+    if(ischosen(pl_from[i2].attributevalue.safe_string))
+    {
+      pl_to[attrtypeidx].modification.vals[nextvalidx].string :=
+        pl_from[i2].attributevalue.safe_string;
+    }
+    else if(ischosen(pl_from[i2].attributevalue.base64_string))
+    {
+      pl_to[attrtypeidx].modification.vals[nextvalidx].string :=
+        f_utf82unichar(dec_LDIF_Base64(pl_from[i2].attributevalue.base64_string));
+    }
+    else
+    {
+      pl_to[attrtypeidx].modification.vals[nextvalidx].string :=
+        pl_from[i2].attributevalue.url;
+    }
+  }
+}
+
+function f_LDAPConvertLDIFAttributes
+(
+  inout AttrValRecordList pl_from,
+  inout AttributeList pl_to
+)
+{
+  var integer attrtypeidx, nextvalidx;
+  pl_to := {};
+  for(var integer i2 := 0; i2 < sizeof(pl_from); i2 := i2+1)
+  {
+    attrtypeidx := f_LDAPFindAttribute(pl_to, pl_from[i2].attributetype);
+    if(attrtypeidx == -1)
+    {
+      attrtypeidx := sizeof(pl_to);
+      pl_to[attrtypeidx].vals := {};
+      pl_to[attrtypeidx].typeField := pl_from[i2].attributetype;
+    }
+
+    for(var integer i3 := 0; i3 < sizeof(pl_from[i2].optionlist); i3 := i3+1)
+    {
+      pl_to[attrtypeidx].typeField := pl_to[attrtypeidx].typeField
+        & ";" & pl_from[i2].optionlist[i3];
+    }
+
+    nextvalidx := sizeof(pl_to[attrtypeidx].vals);
+    if(ischosen(pl_from[i2].attributevalue.safe_string))
+    {
+      pl_to[attrtypeidx].vals[nextvalidx].string :=
+        pl_from[i2].attributevalue.safe_string;
+    }
+    else if(ischosen(pl_from[i2].attributevalue.base64_string))
+    {
+      pl_to[attrtypeidx].vals[nextvalidx].string :=
+        f_utf82unichar(dec_LDIF_Base64(pl_from[i2].attributevalue.base64_string));
+    }
+    else
+    {
+      pl_to[attrtypeidx].vals[nextvalidx].string :=
+        pl_from[i2].attributevalue.url;
+    }
+  }
+}
+
+function f_LDAPConvertLDIFControls
+(
+  inout ControlList pl_from,
+  inout Controls pl_to
+)
+{
+  pl_to := {};
+  for(var integer i2 := 0; i2 < sizeof(pl_from); i2 := i2+1)
+  {
+    pl_to[i2].controlType := pl_from[i2].ldapoid;
+    if(ispresent(pl_from[i2].criticality))
+    {
+      pl_to[i2].criticality := pl_from[i2].criticality;
+    }
+    else
+    {
+      pl_to[i2].criticality := false;
+    }
+
+    pl_to[i2].controlValue := pl_from[i2].controlvalue;
+  }
+}
+
+function f_LDAPFindAttribute
+(
+  inout AttributeList pl_where,
+  inout charstring pl_what
+)
+return integer
+{
+  for(var integer j := sizeof(pl_where)-1; j >= 0; j := j-1)
+  {
+    if(pl_where[j].typeField == pl_what)
+    {
+      return j;
+    }
+  }
+  return -1;
+}
+
+
+//This function fetch attributes (determined by pl_attr_list) of a given
+//enitity from the LDAP server
+function f_search_LDAP_entity(
+  in     charstring     pl_dn_string,
+         LDAPmsg_PT     pl_LDAP,
+  inout  AttributeList  pl_search_result,
+         AttributeDescriptionList pl_attr_list
+)
+return boolean
+{
+  var boolean vl_ok;
+  var LDAPMessage vl_search_msg,vl_response;
+  timer t_T2 := 10.0;
+
+  //Send a search request to fetch a whole entity
+  vl_search_msg.messageID := float2int(2147483647.0*rnd());
+  vl_search_msg.controls := omit;
+  vl_search_msg.protocolOp.searchRequest :=
+    valueof(t_SearchRequest_exact_dn(pl_dn_string,pl_attr_list));
+
+   pl_LDAP.send(vl_search_msg);
+   t_T2.start;
+   alt
+   {
+     //First a Search result entity should be received for the involved entity
+     [] pl_LDAP.receive(tr_searchResultEntry
+                        (vl_search_msg.messageID,
+                         pl_dn_string
+                       )) -> value vl_response
+     {
+       //Store the attribute list. this is the outcome of this function
+       pl_search_result := vl_response.protocolOp.searchResEntry.attributes;
+
+       alt
+       {
+         //The search is finished with a Search Result Done. If it's successful,
+         // then everything fine.
+         [] pl_LDAP.receive(tr_searchResultDone
+                            (vl_search_msg.messageID
+                           )) -> value vl_response
+         {
+            if(vl_response.protocolOp.searchResDone.resultCode == success)
+            {
+              log("Succesful search.");
+              vl_ok := true;
+            }
+            else
+            {
+              log("Error in search: ",
+                vl_response.protocolOp.searchResDone.errorMessage);
+              vl_ok := false;
+            }
+         }
+
+         [] pl_LDAP.receive
+         { log("Other message received"); repeat;}
+
+         [] t_T2.timeout
+         { log("Timeout occured"); vl_ok := false }
+       }
+     }
+
+     [] pl_LDAP.receive(tr_searchResultDone
+                        (vl_search_msg.messageID
+                       )) -> value vl_response
+     {
+        if(vl_response.protocolOp.searchResDone.resultCode == success)
+        {
+          log("Search didn't found the involved entity.");
+          vl_ok := false;
+        }
+        else
+        {
+          log("Error in search: ",
+            vl_response.protocolOp.searchResDone.errorMessage);
+          vl_ok := false;
+        }
+     }
+
+     [] pl_LDAP.receive
+     { log("Other message received"); repeat;}
+
+     [] t_T2.timeout
+     { log("Timeout occured"); vl_ok := false }
+   }
+
+  return vl_ok;
+}
+
+//This function compares the current attribute list of the entity on the LDAP
+// server and the modification list to be performed and generates modification
+// list which can be used later to restore the current state.
+function f_create_restore_modificationList(
+  inout  ModificationList pl_modification_in,
+  inout  AttributeList    pl_search_result,
+  inout  ModificationList pl_modification_restore
+)
+{
+  var integer vl_i, vl_i2, vl_mod_in_nr, vl_search_nr;
+  var AttributeDescription vl_mod_attr_desc;
+  var Attribute vl_store_attr;
+  var boolean vl_found;
+
+  vl_mod_in_nr := sizeof(pl_modification_in);
+  vl_search_nr := sizeof(pl_search_result);
+  //AttributeType is case insensitive
+  for (vl_i2 := 0; vl_i2 < vl_search_nr; vl_i2 := vl_i2 + 1)
+  {
+    f_LDAP_lowercase_string(pl_search_result[vl_i2].typeField);
+  }
+
+  //For every element of the modification list a check is done if it is
+  // available in the entity version fetched from the LDAP server
+  for (vl_i := 0; vl_i < vl_mod_in_nr; vl_i := vl_i + 1)
+  {
+    vl_found := false;
+    vl_mod_attr_desc := pl_modification_in[vl_i].modification.typeField;
+    //AttributeType is case insensitive
+    f_LDAP_lowercase_string(vl_mod_attr_desc);
+    for (vl_i2 := 0; (vl_i2 < vl_search_nr) and not vl_found; vl_i2:=vl_i2+1)
+    {
+      if(vl_mod_attr_desc == pl_search_result[vl_i2].typeField)
+      {
+        vl_found := true;
+        vl_store_attr := pl_search_result[vl_i2];
+      }
+    }
+    //For restoring always the replace modification is used, because it
+    // can be used also for delete of the attributes.
+    pl_modification_restore[vl_i].operation := replaceValue;
+    if (vl_found)
+    { //Attributes exists, current version to be restored
+      pl_modification_restore[vl_i].modification := vl_store_attr;
+    }
+    else
+    { //Attributes doesn't exists, delete attribute by restoring
+      pl_modification_restore[vl_i].modification.typeField := vl_mod_attr_desc;
+      pl_modification_restore[vl_i].modification.vals := {};
+    }
+  }
+}
+
+//This function changes the strings into lower case, because AttributeType 
+//and Attribute value is case insensitive
+function f_LDAP_lowercase_string(
+  inout universal charstring pl_string
+)
+{
+  var integer vl_char;
+  for (var integer vl_i := 0; vl_i < lengthof(pl_string); vl_i := vl_i + 1)
+  {
+    vl_char := unichar2int(pl_string[vl_i]);
+    if ((vl_char > 64) and (vl_char < 91))
+    {
+      vl_char := vl_char + 32;
+      pl_string[vl_i] := int2unichar(vl_char);
+    }
+  }
+}
+} 

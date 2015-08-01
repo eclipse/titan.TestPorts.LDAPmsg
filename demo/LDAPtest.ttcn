@@ -1,0 +1,200 @@
+/******************************************************************************
+* Copyright (c) 2004, 2015  Ericsson AB
+* All rights reserved. This program and the accompanying materials
+* are made available under the terms of the Eclipse Public License v1.0
+* which accompanies this distribution, and is available at
+* http://www.eclipse.org/legal/epl-v10.html
+*
+* Contributors:
+* Endre Szalai
+* Adam Delic
+* Attila Balasko
+* Csaba Feher
+* Csaba Fehér
+* Gabor Bettesch
+* Gabor Szalai
+* Gergely Futo
+* Kristof Szabados
+* Oliver Czerman
+* Roland Gecse
+* Tibor Szabo
+* Zsolt Nandor Torok
+* Zsolt Torpis
+* Zsolt Török
+******************************************************************************/
+//
+//  File:               LDAPtest.ttcn
+//  Description:        LDAP testport example test
+//  Rev:                R9A
+//  Prodnr:             CNL 113 385
+//
+
+module LDAPtest {
+
+//	import from test_dummy all;
+
+import from LDAPmsg_PortType all;
+import from LDAPmsg_Types all;
+import from Lightweight_Directory_Access_Protocol_V3 language "ASN.1:1997" all;
+import from LDIF all;
+type component LDAPcomp {
+  port LDAPmsg_PT LDAP;
+}
+
+template LDAPMessage t_LDAP_searchRequest := {
+  messageID := 1,
+    protocolOp := {
+    searchRequest := {
+      baseObject := "myBaseObject",
+        scope := baseObject,
+        derefAliases := derefInSearching,
+        sizeLimit := 1000,
+        timeLimit := 100,
+        typesOnly := false,
+        filter := {
+        andField := {
+          {
+            greaterOrEqual := {
+              attributeDesc := "myAttDesc;",
+                assertionValue := {
+                string := "MyAssertionString"
+              }
+            }
+          },
+          {
+            extensibleMatch := {
+              matchingRule := omit,
+                typeField := "Description;",
+                matchValue := {
+                string := "MyMatchString"
+              },
+              dnAttributes := true
+            }
+          }
+        }
+      },
+      attributes := {
+        "MyAttDescription"
+      }
+    }
+  },
+  controls := omit
+}
+
+
+template ASP_LDAP_server t_LDAP_searchRequest2 := {
+  client_id := omit,
+    data := {
+    messageID := 1,
+      protocolOp := {
+      searchRequest := {
+        baseObject := "myBaseObject",
+          scope := baseObject,
+          derefAliases := derefInSearching,
+          sizeLimit := 1000,
+          timeLimit := 100,
+          typesOnly := false,
+          filter := {
+          andField := {
+            {
+              greaterOrEqual := {
+                attributeDesc := "myAttDesc;binary",
+                  assertionValue := {
+                  string := "MyAssertionString"
+                }
+              }
+            }
+          }
+        },
+        attributes := {
+          "MyAttDescription"
+        }
+      }
+    },
+    controls := omit
+  }
+}
+
+template LDAPMessage t_dummy := {
+  messageID := 1000,
+    protocolOp := ?,
+    controls := omit
+};
+
+testcase tc1() runs on LDAPcomp {
+
+  map(self:LDAP, system:LDAP);
+
+  var LDIFData information;
+  information := f_ImportLDIF("test1.ldif",false);
+  //f_PopulateLDAPServer(information,LDAP,NoConversion,false);
+  f_PopulateLDAPServer(information,LDAP,Entry2ModifyReplace,false);
+
+
+  setverdict(pass);
+
+  unmap(system:LDAP, self:LDAP);
+}
+
+testcase tc2() runs on LDAPcomp {
+  var ASP_LDAP_server mess;
+  template LDAPMessage t_addrequest :=
+  {
+    messageID := ?,
+      protocolOp :=
+      {
+      addRequest := 
+      {
+        entry := ?,
+          attributes := ?
+      }
+    },
+    controls := *
+  };
+  template ASP_LDAP_server t_received:= {client_id := *,data := t_addrequest};
+  var ASP_LDAP_server receivedmessage;
+  var ASP_LDAP_server sendmessage;
+  var LDAPMessage addresponse:=
+    {
+    messageID := 0,
+    protocolOp := 
+    {
+      addResponse := 
+      {
+        resultCode := success,
+          matchedDN := "",
+          errorMessage := "",
+          referral := omit
+      }
+    }
+  }
+
+  map (system:LDAP, self:LDAP);
+
+  timer T1 := 60.0;
+  T1.start;
+
+  var integer msg_counter := 0;
+
+  alt {
+    [] LDAP.receive(t_received) -> value receivedmessage {
+        addresponse.messageID := receivedmessage.data.messageID;
+        addresponse.protocolOp.addResponse.matchedDN := receivedmessage.data.protocolOp.addRequest.entry;
+        addresponse.controls := receivedmessage.data.controls;
+        sendmessage.client_id := receivedmessage.client_id;
+        sendmessage.data := addresponse;
+        LDAP.send(sendmessage);
+        msg_counter := msg_counter + 1;
+        repeat;
+      }
+    [] T1.timeout {}
+  }
+
+  log ("msg counter: ", msg_counter);
+
+  setverdict(pass);
+
+  unmap (system:LDAP, self:LDAP);
+}
+
+}

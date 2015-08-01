@@ -1,0 +1,2 @@
+# check out CAkey.pem and CAcert.pem and run:
+openssl req -new -x509 -keyout CAkey.pem -out CAcert.pem

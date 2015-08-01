@@ -1,0 +1,49 @@
+<!DOCTYPE TITAN_GUI_project_file>
+<Project TITAN_version="1.8.pre0 build 3" >
+    <General>
+        <Project_Name>LDAPtest</Project_Name>
+        <Executable_Path>LDAPtest</Executable_Path>
+        <Working_Dir>.</Working_Dir>
+        <Build_Host>alpha</Build_Host>
+        <Execution_Mode>Single</Execution_Mode>
+        <ScriptFile_AfterMake>lssl.script</ScriptFile_AfterMake>
+        <Log_Format>yes</Log_Format>
+        <Update_Symlinks>yes</Update_Symlinks>
+        <Create_Absolute_Symlinks>no</Create_Absolute_Symlinks>
+        <Update_Makefile>yes</Update_Makefile>
+        <Localhost_Execute>yes</Localhost_Execute>
+        <Execute_Command>rsh %host &quot;cd %project_working_dir ; &quot;%executable&quot; %localhost %mctr_port&quot;</Execute_Command>
+        <Execute_Hosts>alfa, beta, gamma</Execute_Hosts>
+        <UnUsed_List></UnUsed_List>
+    </General>
+    <Modules>
+        <Module>LDAPtest.ttcn</Module>
+        <Module>../src/LDAPmsg_PortType.ttcn</Module>
+        <Module>../src/LDAPmsg_Types.ttcn</Module>
+        <Module>../src/LDIF.ttcn</Module>
+        <Module>../src/Lightweight_Directory_Access_Protocol_V3.asn</Module>
+    </Modules>
+    <TestPorts>
+        <TestPort>../src/LDAPmsg_PT.cc</TestPort>
+        <TestPort>../src/LDAPmsg_PT.hh</TestPort>
+    </TestPorts>
+    <Other_Sources>
+        <Other_Source>../../Common_Components/Abstract_Socket_CNL113384/src/Abstract_Socket.cc</Other_Source>
+        <Other_Source>../../Common_Components/Abstract_Socket_CNL113384/src/Abstract_Socket.hh</Other_Source>
+        <Other_Source>../src/ldif.tab.cc</Other_Source>
+        <Other_Source>../src/ldif.tab.hh</Other_Source>
+        <Other_Source>../src/lex.yy.cc</Other_Source>
+    </Other_Sources>
+    <Configs>
+        <Config>server.cfg</Config>
+        <Config>client.cfg</Config>
+    </Configs>
+    <Test_Cases>
+        <Test_Case>LDAPtest.tc1</Test_Case>
+        <Test_Case>LDAPtest.tc2</Test_Case>
+    </Test_Cases>
+    <Others>
+        <Other>lssl.script</Other>
+    </Others>
+    <File_Group name="MainFileGroup" />
+</Project>

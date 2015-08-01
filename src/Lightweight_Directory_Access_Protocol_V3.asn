@@ -1,0 +1,344 @@
+--/******************************************************************************
+--* Copyright (c) 2004, 2015  Ericsson AB
+--* All rights reserved. This program and the accompanying materials
+--* are made available under the terms of the Eclipse Public License v1.0
+--* which accompanies this distribution, and is available at
+--* http://www.eclipse.org/legal/epl-v10.html
+--*
+--* Contributors:
+--* Endre Szalai
+--* Adam Delic
+--* Attila Balasko
+--* Csaba Feher
+--* Csaba Fehér
+--* Gabor Bettesch
+--* Gabor Szalai
+--* Gergely Futo
+--* Kristof Szabados
+--* Oliver Czerman
+--* Roland Gecse
+--* Tibor Szabo
+--* Zsolt Nandor Torok
+--* Zsolt Torpis
+--* Zsolt Török
+--******************************************************************************/
+--
+--  File:               Lightweight_Directory_Access_Protocol_V3.asn
+--  Description:        Type definitions for LDAP messages
+--  Rev:                R9A
+--  Prodnr:             CNL 113 385
+
+
+Lightweight-Directory-Access-Protocol-V3 DEFINITIONS
+
+        IMPLICIT TAGS ::=
+
+        BEGIN
+        IMPORTS ;		
+		-- the following type is needed for LDAP test port, octetstring -> universal charstring conversion.
+		-- please do not remove
+
+		OctetStringLike-UniCharString ::= [UNIVERSAL 4] UTF8String
+
+        LDAPMessage ::= SEQUENCE {
+                messageID       MessageID,
+                protocolOp ProtocolOp,
+                 controls       [0] Controls OPTIONAL }
+
+		ProtocolOp ::=       CHOICE {
+                        bindRequest     BindRequest,
+                        bindResponse    BindResponse,
+                        unbindRequest   UnbindRequest,
+                        searchRequest   SearchRequest,
+                        searchResEntry  SearchResultEntry,
+                        searchResDone   SearchResultDone,
+                        searchResRef    SearchResultReference,
+                        modifyRequest   ModifyRequest,
+                        modifyResponse  ModifyResponse,
+                        addRequest      AddRequest,
+                        addResponse     AddResponse,
+                        delRequest      DelRequest,
+                        delResponse     DelResponse,
+                        modDNRequest    ModifyDNRequest,
+                        modDNResponse   ModifyDNResponse,
+                        compareRequest  CompareRequest,
+                        compareResponse CompareResponse,
+                        abandonRequest  AbandonRequest,
+                        extendedReq     ExtendedRequest,
+                        extendedResp    ExtendedResponse }
+
+
+        MessageID ::= INTEGER (0 .. maxInt)
+
+        maxInt INTEGER ::= 2147483647 -- (2^^31 - 1) --
+
+        LDAPString ::= -- OCTET STRING -- [UNIVERSAL 4] UTF8String
+		-- changed by etibsza (2004-04-26)
+
+        LDAPOID ::= -- OCTET STRING-- [UNIVERSAL 4] UTF8String
+		-- changed by etibsza (2004-04-26)
+
+        LDAPDN ::= LDAPString
+
+        RelativeLDAPDN ::= LDAPString
+
+        AttributeType ::= LDAPString
+
+        AttributeDescription ::= LDAPString
+		-- etibsza (2004-04-26): when contains option binary, the AttributeValue or
+		-- AssertionValue is encoded in BER
+
+        AttributeDescriptionList ::= SEQUENCE OF
+                AttributeDescription
+
+        AttributeValue ::= -- OCTET STRING-- CHOICE {
+			string UTF8String,
+			binary OCTET STRING
+		}
+		-- etibsza (2004-04-26) either UTF-8 encoded string or BER encoded value
+		-- (based on binary option in AttributeDescription)
+		-- THIS WORKS ONLY WITH AN LDAP TEST PORT WHICH PARSES THE ATTR.DESCR
+		-- OPTION AND ENCODES/DECODES THE ATTR.VALUE ACCORDINGLY
+		
+        AttributeValueAssertion ::= SEQUENCE {
+                attributeDesc   AttributeDescription,
+                assertionValue  AssertionValue }
+
+        AssertionValue ::= -- OCTET STRING -- CHOICE {
+			string UTF8String,
+			binary OCTET STRING
+		}
+		-- etibsza (2004-04-26) either UTF-8 encoded string or BER encoded value
+		-- (based on binary option in AttributeDescription)
+		-- THIS WORKS ONLY WITH AN LDAP TEST PORT WHICH PARSES THE ATTR.DESCR
+		-- OPTION AND ENCODES/DECODES THE ATTR.VALUE ACCORDINGLY
+		
+        Attribute ::= SEQUENCE {
+                typeField    AttributeDescription,
+                vals         AttributeVals }
+
+        AttributeVals ::= SET OF AttributeValue
+
+        MatchingRuleId ::= LDAPString
+
+        LDAPResult ::= SEQUENCE {
+                resultCode      LDAPResult-ResultCode,                            
+                matchedDN       LDAPDN,
+                errorMessage    LDAPString,
+                referral        [3] Referral OPTIONAL } 
+		
+		
+        LDAPResult-ResultCode ::= ENUMERATED {
+				success                      (0),
+				operationsError              (1),
+				protocolError                (2),
+				timeLimitExceeded            (3),
+				sizeLimitExceeded            (4),
+				compareFalse                 (5),
+				compareTrue                  (6),
+				authMethodNotSupported       (7),
+				strongAuthRequired           (8),
+                    		   -- 9 reserved --
+				referral                     (10),  -- new 
+				adminLimitExceeded           (11),  -- new
+				unavailableCriticalExtension (12),  -- new
+				confidentialityRequired      (13),  -- new
+				saslBindInProgress           (14),  -- new
+				noSuchAttribute              (16),
+				undefinedAttributeType       (17),
+				inappropriateMatching        (18),
+				constraintViolation          (19),
+				attributeOrValueExists       (20),
+				invalidAttributeSyntax       (21),
+                    		   -- 22-31 unused --
+				noSuchObject                 (32),
+				aliasProblem                 (33),
+				invalidDNSyntax              (34),
+				-- 35 reserved for undefined isLeaf --
+				aliasDereferencingProblem    (36),
+                    		   -- 37-47 unused --
+				inappropriateAuthentication  (48),
+				invalidCredentials           (49),
+				insufficientAccessRights     (50),
+				busy                         (51),
+				unavailable                  (52),
+				unwillingToPerform           (53),
+				loopDetect                   (54),
+                    		   -- 55-63 unused --
+				namingViolation              (64),
+				objectClassViolation         (65),
+				notAllowedOnNonLeaf          (66),
+				notAllowedOnRDN              (67),
+				entryAlreadyExists           (68),
+				objectClassModsProhibited    (69),
+                    		   -- 70 reserved for CLDAP --
+				affectsMultipleDSAs          (71), -- new
+                    		   -- 72-79 unused --
+				other                        (80) 
+				 -- 81-90 reserved for APIs --
+        }
+
+        Referral ::= SEQUENCE OF LDAPURL
+
+        LDAPURL ::= LDAPString -- limited to characters permitted in URLs
+
+        Controls ::= SEQUENCE OF Control
+
+        Control ::= SEQUENCE {
+                controlType             LDAPOID,
+                criticality             BOOLEAN DEFAULT FALSE,
+                controlValue            OCTET STRING OPTIONAL }
+
+        BindRequest ::= [APPLICATION 0] SEQUENCE {
+                version                 INTEGER (1 .. 127),
+                name                    LDAPDN,
+                authentication          AuthenticationChoice }
+
+        AuthenticationChoice ::= CHOICE {
+                simple                  [0] OCTET STRING,
+                                         -- 1 and 2 reserved
+                sasl                    [3] SaslCredentials }
+
+        SaslCredentials ::= SEQUENCE {
+                mechanism               LDAPString,
+                credentials             OCTET STRING OPTIONAL }
+
+        BindResponse ::= [APPLICATION 1] SEQUENCE {
+             COMPONENTS OF LDAPResult,
+             serverSaslCreds    [7] OCTET STRING OPTIONAL }
+
+        UnbindRequest ::= [APPLICATION 2] NULL
+
+        SearchRequestScope ::= ENUMERATED {
+             baseObject              (0),
+             singleLevel             (1),
+             wholeSubtree            (2) }
+
+        SearchRequestDeref ::= ENUMERATED {
+             neverDerefAliases       (0),
+             derefInSearching        (1),
+             derefFindingBaseObj     (2),
+             derefAlways             (3) }
+                
+       SearchRequest ::= [APPLICATION 3] SEQUENCE {
+             baseObject      LDAPDN,
+             scope           SearchRequestScope,
+             derefAliases    SearchRequestDeref,
+             sizeLimit       INTEGER (0 .. maxInt),
+             timeLimit       INTEGER (0 .. maxInt),
+             typesOnly       BOOLEAN,
+             filter          Filter,
+             attributes      AttributeDescriptionList }
+
+        Filter ::= CHOICE {
+                andField             [0] SET OF Filter,  -- and -> andField
+                orField              [1] SET OF Filter,  -- or -> orField
+                notField             [2] Filter,
+                equalityMatch   [3] AttributeValueAssertion,
+                substrings      [4] SubstringFilter,
+                greaterOrEqual  [5] AttributeValueAssertion,
+                lessOrEqual     [6] AttributeValueAssertion,
+                present         [7] AttributeDescription,
+                approxMatch     [8] AttributeValueAssertion,
+                extensibleMatch [9] MatchingRuleAssertion }
+
+        SubstringFilter ::= SEQUENCE {
+                typeField            AttributeDescription,
+                -- at least one must be present
+                substrings      SEQUENCE OF CHOICE {
+                        initial  [0] LDAPString,
+                        anyField [1] LDAPString,
+                        final    [2] LDAPString } }
+
+        MatchingRuleAssertion ::= SEQUENCE {
+                matchingRule    [1] MatchingRuleId OPTIONAL,
+                typeField       [2] AttributeDescription OPTIONAL,
+                matchValue      [3] AssertionValue,
+                dnAttributes    [4] BOOLEAN DEFAULT FALSE }
+
+
+
+
+        SearchResultEntry ::= [APPLICATION 4] SEQUENCE {
+                objectName      LDAPDN,
+                attributes      AttributeList }
+
+-- 		  this type is equal to AttributeList, so it was substituted with AttributeList
+
+--        PartialAttributeList ::= SEQUENCE OF SEQUENCE {
+--                type    AttributeDescription,
+--                vals    SET OF AttributeValue }
+
+        SearchResultReference ::= [APPLICATION 19] SEQUENCE OF LDAPURL
+
+        SearchResultDone ::= [APPLICATION 5] LDAPResult
+
+
+        ModifyRequest ::= [APPLICATION 6] SEQUENCE {
+                object          LDAPDN,
+                modification    ModificationList }
+
+        ModificationList ::= SEQUENCE OF Modification
+                                
+        Modification ::= SEQUENCE {
+                operation       ModificationOperation,
+                modification    Attribute }
+
+-- ----------------------------------------
+-- 2005-07-07 ethzto:
+-- TR: MTTSM00007530: "replace" is TTCN3 keyword
+--        ModificationOperation ::= ENUMERATED {
+--                add     (0),
+--                delete  (1),
+--                replace (2) }
+--
+-- ----------------------------------------
+
+	ModificationOperation ::= ENUMERATED {
+                addValue     (0),
+                deleteValue  (1),
+                replaceValue (2) }
+
+-- ----------------------------------------
+
+        ModifyResponse ::= [APPLICATION 7] LDAPResult
+
+        AddRequest ::= [APPLICATION 8] SEQUENCE {
+                entry           LDAPDN,
+                attributes      AttributeList }
+
+        AttributeList ::= SEQUENCE OF Attribute
+
+        AddResponse ::= [APPLICATION 9] LDAPResult
+
+        DelRequest ::= [APPLICATION 10] LDAPDN
+
+        DelResponse ::= [APPLICATION 11] LDAPResult
+
+        ModifyDNRequest ::= [APPLICATION 12] SEQUENCE {
+                entry           LDAPDN,
+                newrdn          RelativeLDAPDN,
+                deleteoldrdn    BOOLEAN,
+                newSuperior     [0] LDAPDN OPTIONAL }
+
+        ModifyDNResponse ::= [APPLICATION 13] LDAPResult
+
+        CompareRequest ::= [APPLICATION 14] SEQUENCE {
+                entry           LDAPDN,
+                ava             AttributeValueAssertion }
+
+        CompareResponse ::= [APPLICATION 15] LDAPResult
+
+        AbandonRequest ::= [APPLICATION 16] MessageID
+
+        ExtendedRequest ::= [APPLICATION 23] SEQUENCE {
+                requestName      [0] LDAPOID,
+                requestValue     [1] OCTET STRING OPTIONAL }
+
+        ExtendedResponse ::= [APPLICATION 24] SEQUENCE {
+                COMPONENTS OF LDAPResult,
+                responseName     [10] LDAPOID OPTIONAL,
+                response         [11] OCTET STRING OPTIONAL }
+
+        END
+

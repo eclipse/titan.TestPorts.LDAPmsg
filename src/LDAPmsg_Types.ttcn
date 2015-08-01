@@ -1,0 +1,66 @@
+/******************************************************************************
+* Copyright (c) 2004, 2015  Ericsson AB
+* All rights reserved. This program and the accompanying materials
+* are made available under the terms of the Eclipse Public License v1.0
+* which accompanies this distribution, and is available at
+* http://www.eclipse.org/legal/epl-v10.html
+*
+* Contributors:
+* Endre Szalai
+* Adam Delic
+* Attila Balasko
+* Csaba Feher
+* Csaba Fehér
+* Gabor Bettesch
+* Gabor Szalai
+* Gergely Futo
+* Kristof Szabados
+* Oliver Czerman
+* Roland Gecse
+* Tibor Szabo
+* Zsolt Nandor Torok
+* Zsolt Torpis
+* Zsolt Török
+******************************************************************************/
+//
+//  File:               LDAPmsg_Types.ttcn
+//  Description:        LDAP testport type definition file
+//  Rev:                R9A
+//  Prodnr:             CNL 113 385
+//
+
+
+module LDAPmsg_Types
+{
+
+import from Lightweight_Directory_Access_Protocol_V3 language "ASN.1:1997" all;
+
+external function f_decode_LDAPMessage(in octetstring data, out LDAPMessage pdu) 
+                                                                 return integer;
+external function f_encode_LDAPMessage(in LDAPMessage pdu) return octetstring;
+
+//*****************************************************************************
+//Type definitions
+//*****************************************************************************
+
+type record ASP_LDAP_server {
+   integer client_id optional,
+   LDAPMessage data
+}
+
+type record ASP_LDAP_closed{
+    integer client_id optional
+}
+
+type record ASP_LDAP_connect {
+  charstring hostname optional,
+  integer portnumber optional,
+  charstring local_hostname optional,
+  integer local_portnumber  optional
+}
+
+type record ASP_LDAP_connect_result{
+    integer client_id
+}
+
+}
