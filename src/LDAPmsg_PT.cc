@@ -25,7 +25,7 @@
 //
 //  File:               LDAPmsg_PT.cc
 //  Description:        LDAP test port source code
-//  Rev:                R9A
+//  Rev:                R9B
 //  Prodnr:             CNL 113 385
 //
 

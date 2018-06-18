@@ -25,7 +25,7 @@
 //
 //  File:               LDAPmsg__PT.hh
 //  Description:        LDAP test port header
-//  Rev:                R9A
+//  Rev:                R9B
 //  Prodnr:             CNL 113 385
 //
 

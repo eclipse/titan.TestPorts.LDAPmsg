@@ -505,7 +505,7 @@ char *yytext;
 //
 //  File:               ldif.lex
 //  Description:        LDIF tokenizer source code
-//  Rev:                R9A
+//  Rev:                R9B
 //  Prodnr:             CNL 113 385
 // 
 #include <stdio.h>
@@ -523,7 +523,8 @@ boolean moddn_keyword = false;
 #define YY_INPUT(buf,result,max_size) \
 { \
   int c0 = getc(yyin); \
-  int c1,n = 0;\
+  int c1 = 0;\
+  int n = 0;\
   if( c0 == EOF){ \
     result = YY_NULL; \
   }else{\

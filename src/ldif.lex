@@ -45,7 +45,8 @@ boolean moddn_keyword = false;
 #define YY_INPUT(buf,result,max_size) \
 { \
   int c0 = getc(yyin); \
-  int c1,n = 0;\
+  int c1 = 0;\
+  int n = 0;\
   if( c0 == EOF){ \
     result = YY_NULL; \
   }else{\

@@ -132,7 +132,7 @@
 //
 //  File:               ldif.y
 //  Description:        BISON LDIF parser source code
-//  Rev:                R9A
+//  Rev:                R9B
 //  Prodnr:             CNL 113 385
 //
 
